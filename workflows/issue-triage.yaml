@@ -1,0 +1,9 @@
+name: issue-triage
+version: 1
+description: Decide whether an engineering issue is clear enough to implement.
+steps:
+  - id: triage
+    uses: codeconductor.triage
+    with:
+      title: ""
+      body: ""

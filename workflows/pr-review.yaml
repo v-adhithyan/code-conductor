@@ -1,0 +1,9 @@
+name: pr-review
+version: 1
+description: Review a GitHub pull request and produce a local report.
+steps:
+  - id: review
+    uses: codeconductor.pr_review
+    with:
+      repo: .
+      pr: ""
