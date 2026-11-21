@@ -6,6 +6,10 @@ CodeConductor is a small CLI for adding reusable GitHub Actions workflows to exi
 
 The first packs are adapted from the issue and PR workflows in [Hackerleap](https://github.com/v-adhithyan/crack-interviews): issue requirements triage through a reviewable pull request, and authorized PR comment follow-up.
 
+## Launch demo
+
+[![Watch the CodeConductor launch video](assets/CodeConductor_launch_preview.png)](assets/CodeConductor_launch.mp4)
+
 ## Install the CLI
 
 Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
@@ -45,6 +49,20 @@ The installer refuses to overwrite files with different contents. Review conflic
 - The label stays active until a reviewer removes it, so later comments can request another revision.
 - Fork branches are not supported by this first pack.
 
+## How it works
+
+### Issue to pull request
+
+1. Open a GitHub issue and add the `ai-ready` label.
+2. ChatGPT checks the request. If important details are missing, it comments with questions and pauses. Reply in the issue; triage runs again.
+3. Once the request is clear, CodeConductor marks it `ai-ready-to-implement`. Codex makes a branch and opens a pull request for you to review. It does not merge the PR.
+
+### PR comment to code changes
+
+1. Add the `ai-address-review` label to a pull request.
+2. Leave an actionable comment on the PR. Codex reads the discussion, updates the same branch, and posts a summary.
+3. Remove the label to pause future comment-triggered updates. This pack currently supports branches in the same repository, not forks.
+
 ## Project ideas
 
 These are ideas to explore; they are not implemented yet.
@@ -65,7 +83,7 @@ Both packs use:
 - Secret `AI_GH_TOKEN`, a fine-grained GitHub token with repository contents, issues, and pull requests read/write access. Its workflow events allow the next GitHub Actions stage to run.
 - Variable `AI_ALLOWED_USERS`, a comma-separated list of GitHub usernames allowed to trigger the automation.
 
-The `pr-review` pack creates the `ai-address-review` label when a new PR opens. To opt in an older PR, create the same label manually if needed and add it to that PR. Remove the label when you want to stop comment-triggered runs.
+The `pr-review` pack creates the `ai-address-review` label in the repository when a PR opens. Add that label to each PR you want Codex to handle; remove it to pause follow-up.
 
 ## Security and project compatibility
 
