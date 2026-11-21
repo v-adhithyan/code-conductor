@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/5b933cf2-4bd4-4465-abe6-60076d8331a5
+
 # CodeConductor
 
 **Install proven engineering workflows in your GitHub repository.**
@@ -8,7 +12,7 @@ The first packs are adapted from the issue and PR workflows in [Hackerleap](http
 
 ## Launch demo
 
-[![Watch the CodeConductor launch video](assets/CodeConductor_launch_preview.png)](assets/CodeConductor_launch.mp4)
+https://github.com/user-attachments/assets/6de56046-cb09-4ad7-b063-4d4a740f9e3f
 
 ## Install the CLI
 
