@@ -31,18 +31,42 @@ jobs:
       REPOSITORY: ${{ github.repository }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
+      - name: Check required repository settings
+        id: configuration
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
+          AI_ALLOWED_USERS: ${{ vars.AI_ALLOWED_USERS || secrets.AI_ALLOWED_USERS }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$OPENAI_API_KEY" ]] || missing+=(OPENAI_API_KEY)
+          [[ -n "$AI_GH_TOKEN" ]] || missing+=(AI_GH_TOKEN)
+          [[ -n "${AI_ALLOWED_USERS//[[:space:]]/}" ]] || missing+=(AI_ALLOWED_USERS)
+          if (( ${#missing[@]} )); then
+            missing_list="$(printf -- '- `%s`\n' "${missing[@]}")"
+            body="$(printf '## CodeConductor setup required\n\nThis workflow is paused because these GitHub Actions settings are missing:\n\n%s\nAdd them under **Settings → Secrets and variables → Actions**, then rerun the workflow.\n\n<!-- codeconductor-config-missing -->' "$missing_list")"
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.configuration.outputs.configured == 'true'
         with:
           token: ${{ secrets.AI_GH_TOKEN || github.token }}
           fetch-depth: 0
           persist-credentials: false
       - name: Check issue approval and authorization
         id: gate
+        if: steps.configuration.outputs.configured == 'true'
         env:
           GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
         run: python3 .github/codeconductor/issue_to_pr/gate.py
       - name: Require a workflow-capable GitHub token
-        if: steps.gate.outputs.ready == 'true'
+        if: steps.configuration.outputs.configured == 'true' && steps.gate.outputs.ready == 'true'
         env:
           AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
         run: test -n "$AI_GH_TOKEN" || { echo "Set the AI_GH_TOKEN repository secret to a fine-grained token that can write contents, issues, and pull requests."; exit 1; }

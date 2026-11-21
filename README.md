@@ -49,6 +49,8 @@ The installer refuses to overwrite files with different contents. Review conflic
 
 After installing a pack, add the listed repository secrets and variables under **Settings → Secrets and variables → Actions**.
 
+If a required setting is missing, the workflow posts a comment on the triggering issue or pull request listing the missing names, then skips AI processing.
+
 Both packs use:
 
 - Secret `OPENAI_API_KEY` for ChatGPT and Codex.
