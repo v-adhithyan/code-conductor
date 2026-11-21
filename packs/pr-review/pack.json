@@ -1,0 +1,28 @@
+{
+  "name": "pr-review",
+  "title": "Pull request review follow-up",
+  "description": "Use authorized PR comments to have Codex address review feedback on the same branch.",
+  "requirements": {
+    "secrets": [
+      {
+        "name": "OPENAI_API_KEY",
+        "description": "OpenAI API key used by the Codex GitHub Action."
+      },
+      {
+        "name": "AI_GH_TOKEN",
+        "description": "Fine-grained GitHub token that can read/write repository contents, issues, and pull requests."
+      }
+    ],
+    "variables": [
+      {
+        "name": "AI_ALLOWED_USERS",
+        "description": "Comma-separated GitHub usernames allowed to trigger AI review follow-up."
+      }
+    ]
+  },
+  "setup": [
+    "Add the secrets and repository variable in Settings → Secrets and variables → Actions.",
+    "Commit and push the installed files to the repository's default branch. New PRs get the label automatically.",
+    "Add ai-address-review to an existing pull request, then leave actionable feedback as a PR comment. Remove the label to pause follow-up."
+  ]
+}

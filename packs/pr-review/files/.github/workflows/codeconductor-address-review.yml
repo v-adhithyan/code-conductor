@@ -1,0 +1,128 @@
+name: CodeConductor address PR review feedback
+
+on:
+  pull_request:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to update
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  create-review-label:
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create opt-in label
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: gh label create ai-address-review --repo "$REPOSITORY" --color 1D76DB --force >/dev/null
+
+  should-run:
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'ai-address-review') ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null &&
+       github.event.comment.user.login != 'github-actions[bot]' &&
+       !contains(github.event.comment.body, '<!-- codeconductor-review-'))
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+      branch: ${{ steps.gate.outputs.branch }}
+    env:
+      GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+      AI_ALLOWED_USERS: ${{ vars.AI_ALLOWED_USERS || secrets.AI_ALLOWED_USERS }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_ACTOR: ${{ github.actor }}
+      PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number || github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AI_GH_TOKEN || github.token }}
+          persist-credentials: false
+      - name: Check opt-in and authorization
+        id: gate
+        run: python3 .github/codeconductor/pr_review/gate.py
+
+  address-review:
+    needs: should-run
+    if: needs.should-run.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: codeconductor-review-${{ inputs.pr_number || github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
+    env:
+      PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number || github.event.issue.number }}
+      REVIEW_BRANCH: ${{ needs.should-run.outputs.branch }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Require a workflow-capable GitHub token
+        env:
+          AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
+        run: test -n "$AI_GH_TOKEN" || { echo "Set AI_GH_TOKEN to a fine-grained token that can write contents and pull requests."; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AI_GH_TOKEN || github.token }}
+          ref: ${{ needs.should-run.outputs.branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Collect pull request discussion
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          PROMPT_FILE: ${{ github.workspace }}/.codeconductor-pr-review-context.md
+        run: python3 .github/codeconductor/pr_review/make_prompt.py
+      - name: Announce review follow-up
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+        run: gh issue comment "$PR_NUMBER" --repo "$REPOSITORY" --body $'## AI review follow-up started\n\nCodex is checking the review discussion and preparing any requested changes.\n\n<!-- codeconductor-review-started -->'
+      - name: Run Codex on review feedback
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":workspace"
+          allow-users: ${{ vars.AI_ALLOWED_USERS || secrets.AI_ALLOWED_USERS }}
+          prompt-file: .codeconductor-pr-review-context.md
+          output-file: ${{ runner.temp }}/codeconductor-review-summary.md
+      - name: Push fixes and report back
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -f .codeconductor-pr-review-context.md
+          summary_file="$RUNNER_TEMP/codeconductor-review-summary.md"
+          summary="$(cat "$summary_file")"
+          if grep -Fq '<!-- codeconductor-review-clarification -->' "$summary_file"; then
+            gh issue comment "$PR_NUMBER" --repo "$REPOSITORY" --body "$summary"
+            exit 0
+          fi
+          if [[ -z "$(git status --porcelain)" ]]; then
+            body="$(printf '%s\n\n<!-- codeconductor-review-no-changes -->' "$summary")"
+            gh issue comment "$PR_NUMBER" --repo "$REPOSITORY" --body "$body"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${AI_GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git add -A
+          if git diff --cached --quiet; then
+            body="$(printf '%s\n\n<!-- codeconductor-review-no-changes -->' "$summary")"
+            gh issue comment "$PR_NUMBER" --repo "$REPOSITORY" --body "$body"
+            exit 0
+          fi
+          git commit -m "Address review feedback on PR #${PR_NUMBER}"
+          git push origin "$REVIEW_BRANCH"
+          body="$(printf '%s\n\n<!-- codeconductor-review-updated -->' "$summary")"
+          gh issue comment "$PR_NUMBER" --repo "$REPOSITORY" --body "$body"

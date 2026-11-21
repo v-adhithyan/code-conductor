@@ -1,49 +1,66 @@
-"""CodeConductor command line interface."""
+"""CLI for installing CodeConductor workflow packs into GitHub repositories."""
 
-import os
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 import typer
-from dotenv import load_dotenv
 from rich.console import Console
-from rich.panel import Panel
 
 from codeconductor import __version__
-from codeconductor.actions import post_pr_comment, pr_review, render_review, triage
-from codeconductor.engine import load_workflow, run_workflow
-from codeconductor.provider import OpenAIProvider
 
-app = typer.Typer(help="Run local-first AI engineering workflows.", no_args_is_help=True)
-workflow_app = typer.Typer(help="List and run YAML workflows.", no_args_is_help=True)
+app = typer.Typer(
+    help="Add reusable GitHub engineering workflows to a repository.", no_args_is_help=True
+)
+workflow_app = typer.Typer(help="Browse and install workflow packs.", no_args_is_help=True)
 app.add_typer(workflow_app, name="workflow")
 console = Console()
 
 
-def project_root() -> Path:
-    return Path.cwd()
+def packs_dir() -> Path:
+    source_packs = Path(__file__).resolve().parents[2] / "packs"
+    if source_packs.exists():
+        return source_packs
+    return Path(__file__).resolve().parent / "packs"
 
 
-def workflows_dir() -> Path:
-    source_workflows = Path(__file__).resolve().parents[2] / "workflows"
-    if source_workflows.exists():
-        return source_workflows
-    return Path(__file__).resolve().parent / "workflows"
+def read_manifest(path: Path) -> dict[str, Any]:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or not manifest.get("name") or not manifest.get("description"):
+        raise ValueError(f"Invalid workflow pack manifest: {path}")
+    return manifest
 
 
-def invoke(workflow_name: str, values: dict[str, object], root: Path | None = None) -> dict:
-    root = root or project_root()
-    load_dotenv(root / ".env")
-    local_workflow = root / ".codeconductor" / "workflows" / f"{workflow_name}.yaml"
-    workflow = load_workflow(local_workflow if local_workflow.exists() else workflows_dir() / f"{workflow_name}.yaml")
-    provider = OpenAIProvider()
-    registry = {
-        "codeconductor.triage": lambda args: triage(args, provider),
-        "codeconductor.pr_review": lambda args: pr_review(args, provider),
-    }
-    # Values override the workflow's illustrative defaults.
-    workflow.steps[0].with_.update(values)
-    return run_workflow(workflow, registry)
+def safe_destination(root: Path, relative: Path) -> Path:
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"Unsafe workflow pack path: {relative}")
+    destination = root
+    for part in relative.parts:
+        destination = destination / part
+        if destination.is_symlink():
+            raise ValueError(f"Refusing to write through a symlink: {destination}")
+    if destination.exists() and not destination.is_file():
+        raise ValueError(f"Destination exists and is not a file: {destination}")
+    return destination
+
+
+def collect_pack_files(pack: Path) -> dict[Path, Path]:
+    sources = [packs_dir() / "shared" / "files", pack / "files"]
+    files: dict[Path, Path] = {}
+    for source_root in sources:
+        if not source_root.exists():
+            continue
+        for source in sorted(source_root.rglob("*")):
+            if source.is_symlink():
+                raise ValueError(f"Workflow packs cannot contain symlinks: {source}")
+            if source.is_file():
+                relative = source.relative_to(source_root)
+                if relative in files and files[relative].read_bytes() != source.read_bytes():
+                    raise ValueError(f"Workflow packs contain conflicting files: {relative}")
+                files[relative] = source
+    if not files:
+        raise ValueError(f"Workflow pack contains no installable files: {pack}")
+    return files
 
 
 @app.command()
@@ -52,131 +69,93 @@ def version() -> None:
     console.print(f"CodeConductor {__version__}")
 
 
-@app.command()
-def init(path: Path = typer.Argument(Path("."), help="Repository to initialize")) -> None:
-    """Add CodeConductor workflow examples to a repository, including an empty one."""
-    path = path.expanduser().resolve()
-    if not path.exists():
-        path.mkdir(parents=True)
-    codeconductor_dir = path / ".codeconductor"
-    codeconductor_dir.mkdir(exist_ok=True)
-    examples_dir = codeconductor_dir / "workflows"
-    examples_dir.mkdir(exist_ok=True)
-    for workflow in workflows_dir().glob("*.yaml"):
-        destination = examples_dir / workflow.name
-        if not destination.exists():
-            destination.write_text(workflow.read_text(encoding="utf-8"), encoding="utf-8")
-    env_example = path / ".env.example"
-    if not env_example.exists():
-        env_example.write_text("OPENAI_API_KEY=\n# Optional model override\nCODECONDUCTOR_MODEL=gpt-4o-mini\n", encoding="utf-8")
-    console.print(f"Initialized CodeConductor in [bold]{path}[/bold]")
-    console.print("Copy .env.example to .env and add your OpenAI API key.")
-
-
-@app.command()
-def doctor() -> None:
-    """Check local requirements for CodeConductor workflows."""
-    load_dotenv(project_root() / ".env")
-    console.print(f"Python: {os.sys.version.split()[0]}")
-    console.print(f"OpenAI API key: {'configured' if os.getenv('OPENAI_API_KEY') else 'missing'}")
-    console.print(f"GitHub CLI: {'available' if os.system('command -v gh >/dev/null 2>&1') == 0 else 'missing'}")
-
-
-@app.command()
-def triage_issue(
-    title: str = typer.Option(..., prompt=True, help="Issue title"),
-    body: str = typer.Option(..., prompt=True, help="Issue description"),
-    output: Optional[Path] = typer.Option(None, help="Write Markdown to a file"),
-) -> None:
-    """Check whether an issue has enough detail to implement."""
-    try:
-        result = invoke("issue-triage", {"title": title, "body": body})["triage"]
-    except Exception as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    console.print(Panel.fit(result["summary"], title=result["status"].replace("_", " ")))
-    if result["questions"]:
-        for index, question in enumerate(result["questions"], 1):
-            console.print(f"{index}. {question}")
-    if output:
-        output.write_text(f"# {result['status']}\n\n{result['summary']}\n" + "\n".join(f"- {q}" for q in result["questions"]), encoding="utf-8")
-        console.print(f"Saved to {output}")
-
-
-@app.command()
-def review_pr(
-    pr: str = typer.Argument(..., help="GitHub pull request number"),
-    repo: Path = typer.Option(Path("."), help="Local checkout of the repository"),
-    post_comment: bool = typer.Option(False, "--post-comment", help="Post the report to GitHub after confirmation"),
-    output: Optional[Path] = typer.Option(None, help="Write Markdown report to a file"),
-) -> None:
-    """Review a GitHub pull request and show a local report."""
-    repo = repo.expanduser().resolve()
-    try:
-        result = invoke("pr-review", {"pr": pr, "repo": str(repo)}, root=repo)["review"]
-    except Exception as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    report = render_review(result)
-    console.print(report)
-    if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(report, encoding="utf-8")
-        console.print(f"Saved report to {output}")
-    if post_comment and typer.confirm(f"Post this review to {result['url']}?", default=False):
-        post_pr_comment(repo, pr, report)
-        console.print("Posted review comment.")
-
-
 @workflow_app.command("list")
 def workflow_list() -> None:
-    """List built-in and repository-local workflows."""
-    candidates = {path.name: path for path in workflows_dir().glob("*.yaml")}
-    local = project_root() / ".codeconductor" / "workflows"
-    if local.exists():
-        candidates.update({path.name: path for path in local.glob("*.yaml")})
-    for path in sorted(candidates.values(), key=lambda item: item.name):
+    """List workflow packs available to install."""
+    for pack in sorted(packs_dir().iterdir(), key=lambda item: item.name):
+        manifest_path = pack / "pack.json"
+        if not pack.is_dir() or not manifest_path.is_file():
+            continue
         try:
-            workflow = load_workflow(path)
-            console.print(f"[bold]{workflow.name}[/bold]  {workflow.description}")
-        except Exception as exc:
-            console.print(f"[red]{path.name}: invalid workflow ({exc})[/red]")
+            manifest = read_manifest(manifest_path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            console.print(f"[red]{pack.name}: invalid pack ({exc})[/red]")
+            continue
+        console.print(f"[bold]{manifest['name']}[/bold]  {manifest['description']}")
 
 
-@workflow_app.command("run")
-def workflow_run(
-    name: str = typer.Argument(..., help="Workflow name, such as issue-triage"),
-    inputs: list[str] = typer.Option([], "--input", help="Set an action input as key=value; repeat as needed"),
-    output: Optional[Path] = typer.Option(None, help="Write a Markdown report to a file"),
+@workflow_app.command("add")
+def workflow_add(
+    name: str = typer.Argument(..., help="Workflow pack to install"),
+    repo: Path = typer.Option(Path("."), "--repo", help="Target repository directory"),
+    force: bool = typer.Option(False, "--force", help="Replace conflicting installed files"),
 ) -> None:
-    """Run a YAML workflow with supplied action inputs."""
-    values: dict[str, str] = {}
-    for item in inputs:
-        if "=" not in item:
-            raise typer.BadParameter(f"Expected key=value for --input, got {item!r}")
-        key, value = item.split("=", 1)
-        values[key.strip()] = value
-    root = project_root()
-    custom_workflow = root / ".codeconductor" / "workflows" / f"{name}.yaml"
-    packaged_workflow = workflows_dir() / f"{name}.yaml"
-    path = custom_workflow if custom_workflow.exists() else packaged_workflow
+    """Copy a workflow pack into a repository's .github directory."""
+    pack = packs_dir() / name
+    manifest_path = pack / "pack.json"
+    if not manifest_path.is_file():
+        available = sorted(
+            item.name for item in packs_dir().iterdir() if item.is_dir() and (item / "pack.json").is_file()
+        )
+        raise typer.BadParameter(f"Unknown workflow pack `{name}`. Available packs: {', '.join(available)}")
     try:
-        load_dotenv(root / ".env")
-        workflow = load_workflow(path)
-        if not workflow.steps:
-            raise ValueError("Workflow has no steps")
-        workflow.steps[0].with_.update(values)
-        provider = OpenAIProvider()
-        result = run_workflow(workflow, {
-            "codeconductor.triage": lambda args: triage(args, provider),
-            "codeconductor.pr_review": lambda args: pr_review(args, provider),
-        })
-    except Exception as exc:
+        manifest = read_manifest(manifest_path)
+        sources = collect_pack_files(pack)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
-    rendered = "\n".join(f"## {step}\n\n{data}" for step, data in result.items())
-    console.print(rendered)
-    if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(rendered + "\n", encoding="utf-8")
-        console.print(f"Saved report to {output}")
+
+    root = repo.expanduser().resolve()
+    if not root.is_dir():
+        raise typer.BadParameter(f"Target repository directory does not exist: {root}")
+
+    plan: list[tuple[Path, Path, str]] = []
+    conflicts: list[Path] = []
+    unchanged: list[Path] = []
+    for relative, source in sources.items():
+        try:
+            destination = safe_destination(root, relative)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        if destination.is_file():
+            if destination.read_bytes() == source.read_bytes():
+                unchanged.append(relative)
+                continue
+            if not force:
+                conflicts.append(relative)
+                continue
+        plan.append((relative, source, "replace" if destination.exists() else "add"))
+
+    if conflicts:
+        items = "\n".join(f"  {path}" for path in conflicts)
+        raise typer.BadParameter(
+            "These files already exist with different contents; no files were changed:\n"
+            f"{items}\nRerun with --force to replace them."
+        )
+
+    for relative, source, _ in plan:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+
+    console.print(f"Installed [bold]{manifest.get('title', name)}[/bold] into {root}")
+    for relative, _, action in plan:
+        console.print(f"  {action}: {relative}")
+    if unchanged:
+        console.print(f"Already up to date: {len(unchanged)} file(s)")
+
+    requirements = manifest.get("requirements", {})
+    secrets = requirements.get("secrets", [])
+    variables = requirements.get("variables", [])
+    setup = manifest.get("setup", [])
+    if secrets or variables or setup:
+        console.print("\n[bold]Finish setup in the GitHub repository:[/bold]")
+        for item in secrets:
+            console.print(f"  Secret {item['name']}: {item['description']}")
+        for item in variables:
+            console.print(f"  Variable {item['name']}: {item['description']}")
+        for step in setup:
+            console.print(f"  {step}")
+    console.print("Commit and push these files to enable the GitHub Actions workflows.")
 
 
 if __name__ == "__main__":

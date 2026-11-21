@@ -1,0 +1,28 @@
+{
+  "name": "issue-to-pr",
+  "title": "GitHub issue to pull request",
+  "description": "Clarify an issue, gate implementation on approval, and open a reviewable pull request.",
+  "requirements": {
+    "secrets": [
+      {
+        "name": "OPENAI_API_KEY",
+        "description": "OpenAI API key used by issue triage and the Codex GitHub Action."
+      },
+      {
+        "name": "AI_GH_TOKEN",
+        "description": "Fine-grained GitHub token that can read/write repository contents, issues, and pull requests. Its events trigger the next workflow stage."
+      }
+    ],
+    "variables": [
+      {
+        "name": "AI_ALLOWED_USERS",
+        "description": "Comma-separated GitHub usernames allowed to start or approve AI issue work."
+      }
+    ]
+  },
+  "setup": [
+    "Add the secrets and repository variable in Settings → Secrets and variables → Actions.",
+    "Commit and push the installed files to the repository's default branch.",
+    "Add the ai-ready label to an issue to start requirements triage."
+  ]
+}

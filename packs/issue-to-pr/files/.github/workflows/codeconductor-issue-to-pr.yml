@@ -1,0 +1,133 @@
+name: CodeConductor issue to pull request
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to implement
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  implement:
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'issues' && github.event.label.name == 'ai-ready-to-implement')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: codeconductor-implement-${{ github.event.issue.number || inputs.issue_number }}
+      cancel-in-progress: false
+    env:
+      AI_ALLOWED_USERS: ${{ vars.AI_ALLOWED_USERS || secrets.AI_ALLOWED_USERS }}
+      AI_TRIGGER_ACTOR: ${{ github.actor }}
+      ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+      REPOSITORY: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AI_GH_TOKEN || github.token }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check issue approval and authorization
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+        run: python3 .github/codeconductor/issue_to_pr/gate.py
+      - name: Require a workflow-capable GitHub token
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
+        run: test -n "$AI_GH_TOKEN" || { echo "Set the AI_GH_TOKEN repository secret to a fine-grained token that can write contents, issues, and pull requests."; exit 1; }
+      - name: Prepare issue context for Codex
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          PROMPT_FILE: ${{ github.workspace }}/.codeconductor-issue-context.md
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE_NUMBER" --json number,title,body,author,labels,comments \
+            | python3 .github/codeconductor/issue_to_pr/make_prompt.py
+      - name: Create or resume implementation branch
+        if: steps.gate.outputs.ready == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
+          AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE_NUMBER" =~ ^[0-9]+$ ]] || { echo "Invalid issue number."; exit 1; }
+          branch="codeconductor/issue-${ISSUE_NUMBER}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git fetch origin "$branch"
+            git switch -C "$branch" "origin/$branch"
+          else
+            git switch -c "$branch"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${AI_GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --set-upstream origin "$branch"
+      - name: Announce implementation start
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+        run: gh issue comment "$ISSUE_NUMBER" --body $'## AI implementation started\n\nRequirements are clear. Codex is inspecting the repository and preparing a pull request.\n\n<!-- codeconductor-implementation-started -->'
+      - name: Run Codex implementation agent
+        id: codex
+        if: steps.gate.outputs.ready == 'true'
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":workspace"
+          allow-users: ${{ vars.AI_ALLOWED_USERS || secrets.AI_ALLOWED_USERS }}
+          prompt-file: .codeconductor-issue-context.md
+          output-file: ${{ runner.temp }}/codeconductor-final-message.md
+      - name: Commit changes and open pull request
+        if: steps.gate.outputs.ready == 'true' && success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -f .codeconductor-issue-context.md
+          if [[ -z "$(git status --porcelain)" ]]; then
+            gh issue comment "$ISSUE_NUMBER" --body $'## AI implementation made no changes\n\nCodex did not produce a code change. Review the Actions log and update the issue if needed.\n\n<!-- codeconductor-no-changes -->'
+            exit 0
+          fi
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No staged changes to commit."
+            exit 0
+          fi
+          git commit -m "Implement issue #${ISSUE_NUMBER}"
+          git push origin "codeconductor/issue-${ISSUE_NUMBER}"
+          existing_pr="$(gh pr list --head "codeconductor/issue-${ISSUE_NUMBER}" --state open --json url --jq '.[0].url' || true)"
+          if [[ -n "$existing_pr" ]]; then
+            pr_url="$existing_pr"
+          else
+            body_file="$RUNNER_TEMP/codeconductor-pr-body.md"
+            {
+              echo "## Implementation summary"
+              echo
+              cat "$RUNNER_TEMP/codeconductor-final-message.md"
+              echo
+              echo "Closes #${ISSUE_NUMBER}"
+            } > "$body_file"
+            pr_url="$(gh pr create --base "$DEFAULT_BRANCH" --head "codeconductor/issue-${ISSUE_NUMBER}" --title "Implement issue #${ISSUE_NUMBER}" --body-file "$body_file")"
+          fi
+          body="$(printf '## Pull request ready\n\nReview the implementation: %s\n\nThe pull request is waiting for human review.\n\n<!-- codeconductor-pr-ready -->' "$pr_url")"
+          gh issue comment "$ISSUE_NUMBER" --body "$body"
+      - name: Announce implementation failure
+        if: steps.gate.outputs.ready == 'true' && failure()
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+        run: gh issue comment "$ISSUE_NUMBER" --body $'## AI implementation blocked\n\nThe workflow failed before opening or updating a pull request. Check the Actions log, fix the cause, and rerun.\n\n<!-- codeconductor-implementation-failed -->'

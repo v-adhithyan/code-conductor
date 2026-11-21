@@ -1,0 +1,117 @@
+name: CodeConductor issue requirements triage
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to triage
+        required: true
+        type: string
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  triage:
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'issues' && github.event.label.name == 'ai-ready') ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request == null &&
+       github.event.comment.user.login != 'github-actions[bot]' &&
+       !contains(github.event.comment.body, '<!-- codeconductor-') &&
+       contains(github.event.issue.labels.*.name, 'ai-awaiting-clarification'))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: codeconductor-triage-${{ github.event.issue.number || inputs.issue_number }}
+      cancel-in-progress: true
+    env:
+      OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
+      AI_ALLOWED_USERS: ${{ vars.AI_ALLOWED_USERS || secrets.AI_ALLOWED_USERS }}
+      AI_TRIGGER_ACTOR: ${{ github.actor }}
+      ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AI_GH_TOKEN || github.token }}
+      - name: Authorize request
+        id: authorization
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          ISSUE_AUTHOR="$(gh issue view "$ISSUE_NUMBER" --json author --jq '.author.login')"
+          allowed=",$(printf '%s' "${AI_ALLOWED_USERS:-}" | tr -d '[:space:]'),"
+          if [[ "$allowed" != *",$ISSUE_AUTHOR,"* && "$allowed" != *",$AI_TRIGGER_ACTOR,"* ]]; then
+            echo "Neither the issue author nor the triggering user is listed in AI_ALLOWED_USERS."
+            echo "authorized=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "authorized=true" >> "$GITHUB_OUTPUT"
+      - name: Create workflow labels
+        if: steps.authorization.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          for label in ai-ready ai-awaiting-clarification ai-ready-to-implement; do
+            gh label create "$label" --color FBCA04 --force >/dev/null
+          done
+      - name: Fetch issue context
+        if: steps.authorization.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+        run: gh issue view "$ISSUE_NUMBER" --json number,title,body,author,labels,comments > "$RUNNER_TEMP/codeconductor-issue.json"
+      - name: Triage issue requirements
+        id: triage
+        if: steps.authorization.outputs.authorized == 'true'
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          result="$(python3 .github/codeconductor/issue_to_pr/triage_issue.py < "$RUNNER_TEMP/codeconductor-issue.json")"
+          printf '%s' "$result" > "$RUNNER_TEMP/codeconductor-triage.json"
+          status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/codeconductor-triage.json")"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Ask for clarification
+        if: steps.triage.outputs.status == 'needs_clarification'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import hashlib, json, os
+          result=json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'codeconductor-triage.json')))
+          questions=result['questions']
+          fingerprint=hashlib.sha256(json.dumps(questions, ensure_ascii=False).encode()).hexdigest()[:16]
+          lines=['## Clarification needed', '', 'Implementation is paused until these questions are answered:', '']
+          lines += [f'{index}. {question}' for index, question in enumerate(questions, 1)]
+          lines += ['', f'<!-- codeconductor-clarification-{fingerprint} -->']
+          print('\\n'.join(lines))
+          PY
+          )"
+          existing="$(gh issue view "$ISSUE_NUMBER" --json comments --jq '.comments[].body')"
+          marker="$(printf '%s' "$body" | tail -n 1)"
+          if ! grep -Fq -- "$marker" <<<"$existing"; then
+            gh issue comment "$ISSUE_NUMBER" --body "$body"
+          fi
+          gh issue edit "$ISSUE_NUMBER" --remove-label ai-ready --remove-label ai-ready-to-implement --add-label ai-awaiting-clarification
+      - name: Mark requirements clear
+        if: steps.triage.outputs.status == 'clear'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          comments="$(gh issue view "$ISSUE_NUMBER" --json comments --jq '.comments[].body')"
+          if ! grep -Fq '<!-- ai-requirements-clear -->' <<<"$comments"; then
+            gh issue comment "$ISSUE_NUMBER" --body $'## Requirements clear\n\nThe request is clear enough to implement. A coding workflow may now open a pull request for human review.\n\n<!-- ai-requirements-clear -->'
+          fi
+          gh issue edit "$ISSUE_NUMBER" --remove-label ai-ready --remove-label ai-awaiting-clarification --add-label ai-ready-to-implement

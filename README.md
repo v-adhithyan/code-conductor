@@ -1,83 +1,71 @@
 # CodeConductor
 
-**Your AI agents. Your tools. One workflow.**
+**Install proven engineering workflows in your GitHub repository.**
 
-This is a local first, open-source toolkit for reusable engineering workflows. It starts with two actions from a real AI-assisted software development lifecycle: clarify an issue before work begins, and review a pull request. It works in a new repo with no code as well as in an existing checkout.
+CodeConductor is a small CLI for adding reusable GitHub Actions workflows to existing or new repositories. GitHub Actions run the workflows; CodeConductor copies the selected files and shows the required setup.
 
-## Quick start
+The first packs are adapted from the issue and PR workflows in [Hackerleap](https://github.com/v-adhithyan/crack-interviews): issue requirements triage through a reviewable pull request, and authorized PR comment follow-up.
 
-Requirements: 
+## Install the CLI
 
-Python 3.11+, 
-OpenAI API key
-github cli with access to the repo you choose. 
-
-
+Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-git clone https://github.com/v-adhithyan/code-conductor
+git clone https://github.com/v-adhithyan/code-conductor.git
 cd code-conductor
 uv tool install --editable .
+```
+
+## Add workflows to a repository
+
+```sh
 cd /path/to/your/repository
-code-conductor init
-cp .env.example .env
-# Add OPENAI_API_KEY to .env
-code-conductor doctor
-```
-
-The first workflow can run from an empty directory:
-
-```sh
-code-conductor triage-issue --title "Add a dark mode" --body "Let users switch the interface to a dark color scheme."
-```
-
-Or use the portable YAML workflow interface:
-
-```sh
 code-conductor workflow list
-code-conductor workflow run issue-triage --input 'title=Add a dark mode' --input 'body=Let users switch the interface to a dark color scheme.'
+code-conductor workflow add issue-to-pr
+code-conductor workflow add pr-review
 ```
 
-Review a GitHub pull request. The report is displayed locally by default:
+Use `--repo /path/to/repository` to target another existing directory. A new GitHub repository can start as an empty local directory; add the workflow files, make the initial commit, and push them to GitHub. Actions begin after the workflows are on the default branch.
 
-```sh
-code-conductor review-pr 42 --repo . --output .codeconductor/runs/pr-42.md
-```
+The installer refuses to overwrite files with different contents. Review conflicts and rerun with `--force` only when you want to replace them. Identical files are left in place.
 
-Posting is a separate, explicit action and asks for confirmation:
+## Workflow packs
 
-```sh
-code-conductor review-pr 42 --repo . --post-comment
-```
+### `issue-to-pr`
 
-## Workflows
+- Add the `ai-ready` label to an issue.
+- ChatGPT checks whether the requirements are clear. If details matter, it asks focused questions on the issue and pauses implementation until someone answers.
+- When requirements are clear, the workflow adds `ai-ready-to-implement`. Codex implements the change on a branch and opens a pull request.
+- The workflow never merges or deploys.
 
-Workflow definitions are readable YAML in `workflows/`. `code-conductor init` copies starter definitions into `.codeconductor/workflows/` in the target repository. The initial schema is intentionally small: workflow name, version, description, and ordered action steps. Unknown fields and duplicate step IDs are rejected.
+### `pr-review`
 
-### Issue requirements triage
+- Add the `ai-address-review` label to a pull request to opt it into review follow-up.
+- Authorized human PR comments trigger Codex to address feedback on the same branch.
+- The label stays active until a reviewer removes it, so later comments can request another revision.
+- Fork branches are not supported by this first pack.
 
-Accepts issue text directly, so it can help bootstrap a brand-new project before its first files exist. It returns `clear` or `needs_clarification`, a short summary, and up to five implementation-relevant questions. Issue text is treated as untrusted data.
+## GitHub setup
 
-### Pull request review
+After installing a pack, add the listed repository secrets and variables under **Settings → Secrets and variables → Actions**.
 
-Reads the PR diff with GitHub CLI, asks ChatGPT for concrete defects, and produces a Markdown report. Reports stay local unless `--post-comment` is passed and confirmed. Verify findings before acting on them.
+Both packs use:
 
-## Configuration and privacy
+- Secret `OPENAI_API_KEY` for ChatGPT and Codex.
+- Secret `AI_GH_TOKEN`, a fine-grained GitHub token with repository contents, issues, and pull requests read/write access. Its workflow events allow the next GitHub Actions stage to run.
+- Variable `AI_ALLOWED_USERS`, a comma-separated list of GitHub usernames allowed to trigger the automation.
 
-Set `OPENAI_API_KEY` in the environment or in a local `.env` file. `.env` is ignored by Git. `CODECONDUCTOR_MODEL` optionally selects a ChatGPT API model; the default is `gpt-4o-mini`. Workflow inputs and repository diffs are sent to the OpenAI API when an action runs. PR access uses the locally authenticated `gh` CLI.
+The `pr-review` pack creates the `ai-address-review` label when a new PR opens. To opt in an older PR, create the same label manually if needed and add it to that PR. Remove the label when you want to stop comment-triggered runs.
 
-## Current scope
+## Security and project compatibility
 
-- Python CLI and a validated, portable YAML workflow format.
-- Local execution, with no CodeConductor account or hosted service.
-- One ChatGPT adapter and two built-in actions.
-- Local output by default; explicit confirmation before posting a PR comment.
+The workflows check the allowlist before sending issue text to OpenAI. Codex receives only the issue or PR context it needs, runs with the `:workspace` permission profile, and does not receive the GitHub write token. Separate workflow steps use `AI_GH_TOKEN` to create branches, comments, and pull requests.
 
-The MVP does not merge PRs, push branches, run arbitrary shell steps, or execute code from a repository.
+The implementation workflow reads repository instructions such as `AGENTS.md` and the installed `.github/codeconductor/AI_SDLC.md`. It does not assume a particular language, framework, or dependency layout. Project checks run only when the repository documents them and the runner has the required tools.
 
-## Sharing and contributing
+## Add a workflow pack
 
-Workflow files are designed to be copied, forked, and adapted alongside the repository that uses them. Contributions should include a focused action, an example workflow, and clear permission and data-handling notes. Share reports only after removing private repository details.
+Each pack lives in `packs/<name>/` with a `pack.json` manifest and a `files/` tree copied into the target repository. Shared policy files live in `packs/shared/files/`. Add a manifest description, required secrets and variables, setup notes, and the files required by that workflow.
 
 ## Development
 
