@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: Create opt-in label
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: gh label create ai-address-review --repo "$REPOSITORY" --color 1D76DB --force >/dev/null
 
@@ -50,7 +50,7 @@ jobs:
         id: configuration
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
           AI_ALLOWED_USERS: ${{ vars.AI_ALLOWED_USERS || secrets.AI_ALLOWED_USERS }}
@@ -107,7 +107,7 @@ jobs:
         run: python3 .github/codeconductor/pr_review/make_prompt.py
       - name: Announce review follow-up
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: gh issue comment "$PR_NUMBER" --repo "$REPOSITORY" --body $'## AI review follow-up started\n\nCodex is checking the review discussion and preparing any requested changes.\n\n<!-- codeconductor-review-started -->'
       - name: Run Codex on review feedback
         id: codex
@@ -121,7 +121,7 @@ jobs:
       - name: Push fixes and report back
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
         run: |
           set -euo pipefail

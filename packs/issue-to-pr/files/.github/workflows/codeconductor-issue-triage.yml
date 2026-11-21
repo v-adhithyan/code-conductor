@@ -39,7 +39,7 @@ jobs:
         id: configuration
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
           AI_ALLOWED_USERS: ${{ vars.AI_ALLOWED_USERS || secrets.AI_ALLOWED_USERS }}
@@ -107,7 +107,8 @@ jobs:
         if: steps.triage.outputs.status == 'needs_clarification'
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
+          AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
         run: |
           set -euo pipefail
           body="$(python3 - <<'PY'
@@ -131,11 +132,12 @@ jobs:
         if: steps.triage.outputs.status == 'clear'
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
+          AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
         run: |
           set -euo pipefail
           comments="$(gh issue view "$ISSUE_NUMBER" --json comments --jq '.comments[].body')"
           if ! grep -Fq '<!-- ai-requirements-clear -->' <<<"$comments"; then
             gh issue comment "$ISSUE_NUMBER" --body $'## Requirements clear\n\nThe request is clear enough to implement. A coding workflow may now open a pull request for human review.\n\n<!-- ai-requirements-clear -->'
           fi
-          gh issue edit "$ISSUE_NUMBER" --remove-label ai-ready --remove-label ai-awaiting-clarification --add-label ai-ready-to-implement
+          GH_TOKEN="$AI_GH_TOKEN" gh issue edit "$ISSUE_NUMBER" --remove-label ai-ready --remove-label ai-awaiting-clarification --add-label ai-ready-to-implement

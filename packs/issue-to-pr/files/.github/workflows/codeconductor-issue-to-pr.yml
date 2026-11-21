@@ -35,7 +35,7 @@ jobs:
         id: configuration
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
           AI_ALLOWED_USERS: ${{ vars.AI_ALLOWED_USERS || secrets.AI_ALLOWED_USERS }}
@@ -63,7 +63,7 @@ jobs:
         id: gate
         if: steps.configuration.outputs.configured == 'true'
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: python3 .github/codeconductor/issue_to_pr/gate.py
       - name: Require a workflow-capable GitHub token
         if: steps.configuration.outputs.configured == 'true' && steps.gate.outputs.ready == 'true'
@@ -102,7 +102,7 @@ jobs:
       - name: Announce implementation start
         if: steps.gate.outputs.ready == 'true'
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: gh issue comment "$ISSUE_NUMBER" --body $'## AI implementation started\n\nRequirements are clear. Codex is inspecting the repository and preparing a pull request.\n\n<!-- codeconductor-implementation-started -->'
       - name: Run Codex implementation agent
         id: codex
@@ -118,7 +118,7 @@ jobs:
         if: steps.gate.outputs.ready == 'true' && success()
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           AI_GH_TOKEN: ${{ secrets.AI_GH_TOKEN }}
         run: |
           set -euo pipefail
@@ -134,7 +134,7 @@ jobs:
           fi
           git commit -m "Implement issue #${ISSUE_NUMBER}"
           git push origin "codeconductor/issue-${ISSUE_NUMBER}"
-          existing_pr="$(gh pr list --head "codeconductor/issue-${ISSUE_NUMBER}" --state open --json url --jq '.[0].url' || true)"
+          existing_pr="$(GH_TOKEN="$AI_GH_TOKEN" gh pr list --head "codeconductor/issue-${ISSUE_NUMBER}" --state open --json url --jq '.[0].url' || true)"
           if [[ -n "$existing_pr" ]]; then
             pr_url="$existing_pr"
           else
@@ -146,12 +146,12 @@ jobs:
               echo
               echo "Closes #${ISSUE_NUMBER}"
             } > "$body_file"
-            pr_url="$(gh pr create --base "$DEFAULT_BRANCH" --head "codeconductor/issue-${ISSUE_NUMBER}" --title "Implement issue #${ISSUE_NUMBER}" --body-file "$body_file")"
+            pr_url="$(GH_TOKEN="$AI_GH_TOKEN" gh pr create --base "$DEFAULT_BRANCH" --head "codeconductor/issue-${ISSUE_NUMBER}" --title "Implement issue #${ISSUE_NUMBER}" --body-file "$body_file")"
           fi
           body="$(printf '## Pull request ready\n\nReview the implementation: %s\n\nThe pull request is waiting for human review.\n\n<!-- codeconductor-pr-ready -->' "$pr_url")"
           gh issue comment "$ISSUE_NUMBER" --body "$body"
       - name: Announce implementation failure
         if: steps.gate.outputs.ready == 'true' && failure()
         env:
-          GH_TOKEN: ${{ secrets.AI_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: gh issue comment "$ISSUE_NUMBER" --body $'## AI implementation blocked\n\nThe workflow failed before opening or updating a pull request. Check the Actions log, fix the cause, and rerun.\n\n<!-- codeconductor-implementation-failed -->'
