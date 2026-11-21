@@ -45,6 +45,14 @@ The installer refuses to overwrite files with different contents. Review conflic
 - The label stays active until a reviewer removes it, so later comments can request another revision.
 - Fork branches are not supported by this first pack.
 
+## Project ideas
+
+These are ideas to explore; they are not implemented yet.
+
+- **Jira to GitHub issue triage:** bring Jira tickets into GitHub and run the issue-triage workflow on them.
+- **Slack and Microsoft Teams notifications:** send progress updates as each workflow step starts or finishes.
+- **Isolated visual QA environments:** connect an AWS account, launch a dedicated test environment for UI changes, and open the project in Docker so visual changes can be previewed safely.
+
 ## GitHub setup
 
 After installing a pack, add the listed repository secrets and variables under **Settings → Secrets and variables → Actions**.
