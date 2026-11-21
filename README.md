@@ -1,7 +1,3 @@
-
-
-https://github.com/user-attachments/assets/5b933cf2-4bd4-4465-abe6-60076d8331a5
-
 # CodeConductor
 
 **Install proven engineering workflows in your GitHub repository.**
